@@ -13,7 +13,15 @@ interface CopyOption {
 interface FileItem extends vscode.QuickPickItem {
   path: string;
   content: string;
+  lineCount: number;
 }
+
+// Constants for size limits
+const SIZE_LIMITS = {
+  OPTIMAL: 1000,
+  WARNING: 2000,
+  CRITICAL: 3000,
+};
 
 export async function activate(context: vscode.ExtensionContext) {
   const extractor = new CodeExtractor();
@@ -28,16 +36,47 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
+      // Calculate total lines for all related files
+      const mainFile = editor.document;
+      const currentFileLines = mainFile.lineCount;
+      const imports = parseImports(mainFile.getText());
+      const resolvedImports = await resolveImportPaths(
+        imports,
+        mainFile.fileName
+      );
+
+      let totalRelatedLines = currentFileLines;
+      for (const importInfo of resolvedImports) {
+        try {
+          const doc = await vscode.workspace.openTextDocument(
+            vscode.Uri.file(importInfo.resolvedPath)
+          );
+          totalRelatedLines += doc.lineCount;
+        } catch (error) {
+          console.error(
+            `Error loading file ${importInfo.resolvedPath}:`,
+            error
+          );
+        }
+      }
+
+      const currentSizeIndicator = getSizeIndicator(currentFileLines);
+      const allFilesSizeIndicator = getSizeIndicator(totalRelatedLines);
+
       // Create Quick Pick for copy options
       const options: CopyOption[] = [
         {
           label: "$(file) Current File Only",
-          description: "Copy only the content of the current file",
+          description: `${currentFileLines} lines`,
+          detail: `${currentSizeIndicator.icon} ${currentSizeIndicator.message}`,
           value: "current",
         },
         {
-          label: "$(files) All Related Files",
-          description: "Copy current file and all its imports",
+          label: "$(files) All Related Imports",
+          description: `${totalRelatedLines} lines total from ${
+            resolvedImports.length + 1
+          } files`,
+          detail: `${allFilesSizeIndicator.icon} ${allFilesSizeIndicator.message}`,
           value: "all",
         },
         {
@@ -65,7 +104,9 @@ export async function activate(context: vscode.ExtensionContext) {
         switch (selectedOption.value) {
           case "current":
             await vscode.env.clipboard.writeText(mainFile.getText().trim());
-            vscode.window.showInformationMessage("Current file copied");
+            vscode.window.showInformationMessage(
+              `Current file copied (${currentFileLines} lines)`
+            );
             break;
 
           case "all":
@@ -87,6 +128,32 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(copyCurrentFileCommand);
 }
 
+function getSizeIndicator(lineCount: number): {
+  message: string;
+  icon: string;
+} {
+  if (lineCount <= SIZE_LIMITS.OPTIMAL) {
+    return {
+      message: "✓ Optimal size for AI assistance",
+      icon: "$(check)",
+    };
+  } else if (lineCount <= SIZE_LIMITS.WARNING) {
+    return {
+      message: "⚠️ Large file - Consider selecting specific sections",
+      icon: "$(warning)",
+    };
+  } else {
+    return {
+      message: "⛔ Very large file - AI assistance may be limited",
+      icon: "$(error)",
+    };
+  }
+}
+
+function calculateTotalLines(files: FileItem[]): number {
+  return files.reduce((total, file) => total + file.lineCount, 0);
+}
+
 async function copyAllFiles(
   mainFile: vscode.TextDocument,
   resolvedImports: any[],
@@ -95,6 +162,7 @@ async function copyAllFiles(
   const mainFileContent = mainFile.getText().trim() + "\n\n";
   const processedFiles = new Set([mainFile.fileName]);
   let extractedContent = "";
+  let totalLines = mainFile.lineCount;
 
   for (const importInfo of resolvedImports) {
     if (processedFiles.has(importInfo.resolvedPath)) continue;
@@ -103,6 +171,7 @@ async function copyAllFiles(
       const importedContent = await vscode.workspace.openTextDocument(
         vscode.Uri.file(importInfo.resolvedPath)
       );
+      totalLines += importedContent.lineCount;
 
       const extractedEntities = await extractor.extractImportedEntities(
         importedContent.getText(),
@@ -119,10 +188,20 @@ async function copyAllFiles(
     }
   }
 
+  const sizeIndicator = getSizeIndicator(totalLines);
+  if (totalLines > SIZE_LIMITS.WARNING) {
+    const proceed = await vscode.window.showWarningMessage(
+      `The combined code is ${totalLines} lines. ${sizeIndicator.message}`,
+      "Copy Anyway",
+      "Cancel"
+    );
+    if (proceed !== "Copy Anyway") return;
+  }
+
   const finalContent = mainFileContent + extractedContent.trim();
   await vscode.env.clipboard.writeText(finalContent);
   vscode.window.showInformationMessage(
-    `Code copied from ${processedFiles.size} files`
+    `Code copied from ${processedFiles.size} files (${totalLines} lines)`
   );
 }
 
@@ -135,9 +214,11 @@ async function copySelectedFiles(
   const fileItems: FileItem[] = [
     {
       label: "$(file) " + vscode.workspace.asRelativePath(mainFile.fileName),
-      description: "Current file",
+      description: `${mainFile.lineCount} lines`,
+      detail: getSizeIndicator(mainFile.lineCount).message,
       path: mainFile.fileName,
       content: mainFile.getText(),
+      lineCount: mainFile.lineCount,
       picked: true,
     },
   ];
@@ -153,29 +234,59 @@ async function copySelectedFiles(
       );
       fileItems.push({
         label: "$(file) " + relativePath,
-        description: `Import from ${importInfo.source}`,
+        description: `${doc.lineCount} lines`,
+        detail: getSizeIndicator(doc.lineCount).message,
         path: importInfo.resolvedPath,
         content: doc.getText(),
+        lineCount: doc.lineCount,
       });
     } catch (error) {
       console.error(`Error loading file ${relativePath}:`, error);
     }
   }
 
-  // Show quick pick for file selection
-  const selectedFiles = await vscode.window.showQuickPick(fileItems, {
-    placeHolder: "Select files to copy (Space to select, Enter to confirm)",
-    canPickMany: true,
-    title: "Select Files to Copy",
+  const quickPick = vscode.window.createQuickPick();
+  quickPick.items = fileItems;
+  quickPick.canSelectMany = true;
+  quickPick.title = "Select Files to Copy";
+  quickPick.placeholder = "Space to select, Enter to confirm";
+
+  let selectedFiles: FileItem[] = [];
+
+  // Update the description as files are selected
+  quickPick.onDidChangeSelection(items => {
+    selectedFiles = items as FileItem[];
+    const totalLines = calculateTotalLines(selectedFiles);
+    const indicator = getSizeIndicator(totalLines);
+    quickPick.title = `Total: ${totalLines} lines - ${indicator.message}`;
   });
 
-  if (!selectedFiles || selectedFiles.length === 0) return;
+  const result = await new Promise<FileItem[] | undefined>(resolve => {
+    quickPick.onDidAccept(() => {
+      resolve(selectedFiles);
+      quickPick.hide();
+    });
+    quickPick.onDidHide(() => resolve(undefined));
+    quickPick.show();
+  });
+
+  if (!result || result.length === 0) return;
+
+  const totalLines = calculateTotalLines(result);
+  if (totalLines > SIZE_LIMITS.WARNING) {
+    const proceed = await vscode.window.showWarningMessage(
+      `The combined code is ${totalLines} lines. This might be too large for optimal AI assistance.`,
+      "Copy Anyway",
+      "Cancel"
+    );
+    if (proceed !== "Copy Anyway") return;
+  }
 
   // Combine selected file contents
   let finalContent = "";
   const processedFiles = new Set<string>();
 
-  for (const file of selectedFiles) {
+  for (const file of result) {
     if (processedFiles.has(file.path)) continue;
 
     if (file.path === mainFile.fileName) {
@@ -199,7 +310,7 @@ async function copySelectedFiles(
 
   await vscode.env.clipboard.writeText(finalContent.trim());
   vscode.window.showInformationMessage(
-    `Code copied from ${processedFiles.size} selected files`
+    `Code copied from ${processedFiles.size} selected files (${totalLines} lines)`
   );
 }
 

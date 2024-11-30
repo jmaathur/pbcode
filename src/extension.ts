@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { CodeExtractor } from "./services/CodeExtractor";
 import { parseImports } from "./utils/importParser";
-import { resolveImportPaths } from "./utils/pathResolver";
+import { resolveImportPaths } from "./utils/pathResolution";
 
 export async function activate(context: vscode.ExtensionContext) {
   const extractor = new CodeExtractor();

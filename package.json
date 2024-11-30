@@ -3,6 +3,7 @@
   "publisher": "pbcode",
   "displayName": "pbcode",
   "description": "pbcode",
+  "repository": {"url": "https://github.com/jmaathur/pbcode"},
   "version": "0.0.4",
   "engines": {
     "vscode": "^1.95.0"

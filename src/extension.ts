@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { CodeExtractor } from "./services/CodeExtractor";
 import { parseImports } from "./utils/importParser";
-import { resolveImportPaths } from "./utils/pathResolution";
+import { ResolvedImportTree, resolveImportPaths } from "./utils/pathResolution";
 import { QuickPickService } from "./services/QuickPickService";
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -17,33 +17,40 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      // Calculate total lines for all related files
       const mainFile = editor.document;
       const currentFileLines = mainFile.lineCount;
       const imports = parseImports(mainFile.getText());
+
+      // Initial resolution to show basic stats
       const resolvedImports = await resolveImportPaths(
         imports,
-        mainFile.fileName
+        mainFile.fileName,
+        1
       );
 
-      let totalRelatedLines = currentFileLines;
-      for (const importInfo of resolvedImports) {
+      // Calculate estimated lines by previewing the extracted content
+      let estimatedImportedLines = 0;
+      for (const importTree of resolvedImports) {
         try {
-          const doc = await vscode.workspace.openTextDocument(
-            vscode.Uri.file(importInfo.resolvedPath)
+          const importedDoc = await vscode.workspace.openTextDocument(
+            vscode.Uri.file(importTree.importInfo.resolvedPath)
           );
-          totalRelatedLines += doc.lineCount;
+          const extractedEntities = await extractor.extractImportedEntities(
+            importedDoc.getText(),
+            [importTree.importInfo]
+          );
+          estimatedImportedLines += extractedEntities.reduce(
+            (sum, entity) => sum + entity.content.split("\n").length,
+            0
+          );
         } catch (error) {
-          console.error(
-            `Error loading file ${importInfo.resolvedPath}:`,
-            error
-          );
+          console.error("Error estimating lines:", error);
         }
       }
 
       const selectedOption = await QuickPickService.showCopyOptions(
         currentFileLines,
-        totalRelatedLines,
+        currentFileLines + estimatedImportedLines,
         resolvedImports.length
       );
 
@@ -58,13 +65,27 @@ export async function activate(context: vscode.ExtensionContext) {
             );
             break;
 
-          case "all":
-            await copyAllFiles(mainFile, resolvedImports, extractor);
+          case "all": {
+            const depth = selectedOption.depth || 1;
+            const resolvedImportTree = await resolveImportPaths(
+              imports,
+              mainFile.fileName,
+              depth
+            );
+            await copyAllFiles(mainFile, resolvedImportTree, extractor, depth);
             break;
+          }
 
-          case "selected":
-            await copySelectedFiles(mainFile, resolvedImports, extractor);
+          case "selected": {
+            const depth = await QuickPickService.selectImportDepth();
+            const resolvedImportTree = await resolveImportPaths(
+              imports,
+              mainFile.fileName,
+              depth
+            );
+            await copySelectedFiles(mainFile, resolvedImportTree, extractor);
             break;
+          }
         }
       } catch (error) {
         outputChannel.appendLine("Error: " + error);
@@ -79,36 +100,52 @@ export async function activate(context: vscode.ExtensionContext) {
 
 async function copyAllFiles(
   mainFile: vscode.TextDocument,
-  resolvedImports: any[],
-  extractor: CodeExtractor
+  resolvedImports: ResolvedImportTree[],
+  extractor: CodeExtractor,
+  maxDepth: number
 ) {
   const mainFileContent = mainFile.getText().trim() + "\n\n";
   const processedFiles = new Set([mainFile.fileName]);
   let extractedContent = "";
   let totalLines = mainFile.lineCount;
 
-  for (const importInfo of resolvedImports) {
-    if (processedFiles.has(importInfo.resolvedPath)) continue;
+  async function processImportTree(importTree: ResolvedImportTree) {
+    if (processedFiles.has(importTree.importInfo.resolvedPath)) return;
 
     try {
       const importedContent = await vscode.workspace.openTextDocument(
-        vscode.Uri.file(importInfo.resolvedPath)
+        vscode.Uri.file(importTree.importInfo.resolvedPath)
       );
-      totalLines += importedContent.lineCount;
-
       const extractedEntities = await extractor.extractImportedEntities(
         importedContent.getText(),
-        [importInfo]
+        [importTree.importInfo]
       );
 
+      let importedLines = 0;
       extractedEntities.forEach(entity => {
         extractedContent += entity.content;
+        importedLines += entity.content.split("\n").length;
       });
 
-      processedFiles.add(importInfo.resolvedPath);
+      totalLines += importedLines;
+      processedFiles.add(importTree.importInfo.resolvedPath);
+
+      // Process nested imports if they exist
+      if (importTree.nestedImports) {
+        for (const nestedImport of importTree.nestedImports) {
+          await processImportTree(nestedImport);
+        }
+      }
     } catch (error) {
-      console.error(`Error processing import ${importInfo.source}:`, error);
+      console.error(
+        `Error processing import ${importTree.importInfo.source}:`,
+        error
+      );
     }
+  }
+
+  for (const importTree of resolvedImports) {
+    await processImportTree(importTree);
   }
 
   if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
@@ -124,7 +161,7 @@ async function copyAllFiles(
 
 async function copySelectedFiles(
   mainFile: vscode.TextDocument,
-  resolvedImports: any[],
+  resolvedImports: ResolvedImportTree[],
   extractor: CodeExtractor
 ) {
   const selectedFiles = await QuickPickService.showFileSelector(
@@ -133,38 +170,22 @@ async function copySelectedFiles(
   );
   if (!selectedFiles || selectedFiles.length === 0) return;
 
-  const totalLines = selectedFiles.reduce(
-    (total, file) => total + file.lineCount,
-    0
-  );
-  if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
-    return;
-  }
-
-  // Combine selected file contents
-  let finalContent = "";
-  const processedFiles = new Set<string>();
+  let totalLines = mainFile.lineCount;
+  let finalContent = mainFile.getText().trim() + "\n\n";
+  const processedFiles = new Set<string>([mainFile.fileName]);
 
   for (const file of selectedFiles) {
     if (processedFiles.has(file.path)) continue;
 
-    if (file.path === mainFile.fileName) {
-      finalContent += file.content.trim() + "\n\n";
-    } else {
-      const importInfo = resolvedImports.find(
-        imp => imp.resolvedPath === file.path
-      );
-      if (importInfo) {
-        const extractedEntities = await extractor.extractImportedEntities(
-          file.content,
-          [importInfo]
-        );
-        extractedEntities.forEach(entity => {
-          finalContent += entity.content;
-        });
-      }
+    if (file.path !== mainFile.fileName) {
+      finalContent += file.importedContent;
+      totalLines += file.importedLineCount;
     }
     processedFiles.add(file.path);
+  }
+
+  if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
+    return;
   }
 
   await vscode.env.clipboard.writeText(finalContent.trim());

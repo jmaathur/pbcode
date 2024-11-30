@@ -4,6 +4,12 @@ import * as fs from "fs/promises";
 import { TSConfig, ImportInfo } from "../types";
 import PathResolver from "../services/PathResolver";
 import JSON5 from "json5";
+import { parseImports } from "./importParser";
+
+export interface ResolvedImportTree {
+  importInfo: ImportInfo;
+  nestedImports?: ResolvedImportTree[];
+}
 
 async function loadTSConfig(workspaceRoot: string): Promise<TSConfig> {
   try {
@@ -14,11 +20,6 @@ async function loadTSConfig(workspaceRoot: string): Promise<TSConfig> {
     console.error("Failed to load tsconfig.json:", error);
     return {};
   }
-}
-
-function matchesAtStart(input: string, pattern: string): boolean {
-  const regex = new RegExp("^" + pattern);
-  return regex.test(input);
 }
 
 async function resolveAliasPath(
@@ -68,22 +69,22 @@ async function tryExtensions(basePath: string): Promise<string | null> {
 
 export async function resolveImportPaths(
   imports: ImportInfo[],
-  currentFilePath: string
-): Promise<ImportInfo[]> {
-  console.log("\nResolving import paths for file:", currentFilePath);
-
+  currentFilePath: string,
+  maxDepth: number = 1,
+  processedPaths: Set<string> = new Set()
+): Promise<ResolvedImportTree[]> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
   if (!workspaceRoot) {
     throw new Error("No workspace root found");
   }
 
   const tsconfig = await loadTSConfig(workspaceRoot);
+  const resolvedTrees: ResolvedImportTree[] = [];
 
-  const resolvedImports: ImportInfo[] = [];
+  // Add current file to processed paths to prevent circular imports
+  processedPaths.add(currentFilePath);
 
   for (const importInfo of imports) {
-    console.log("\nProcessing import:", importInfo.source);
-
     try {
       let resolvedPath: string | null = null;
 
@@ -101,17 +102,31 @@ export async function resolveImportPaths(
         resolvedPath = await tryExtensions(absolutePath);
       }
 
-      if (resolvedPath) {
-        console.log("Successfully resolved path:", resolvedPath);
+      if (resolvedPath && !processedPaths.has(resolvedPath)) {
         importInfo.resolvedPath = resolvedPath;
-        resolvedImports.push(importInfo);
-      } else {
-        console.log("Could not resolve path for:", importInfo.source);
+        const importTree: ResolvedImportTree = { importInfo };
+
+        // If we haven't reached max depth, process nested imports
+        if (maxDepth > 1) {
+          const doc = await vscode.workspace.openTextDocument(
+            vscode.Uri.file(resolvedPath)
+          );
+          const nestedImports = parseImports(doc.getText());
+          importTree.nestedImports = await resolveImportPaths(
+            nestedImports,
+            resolvedPath,
+            maxDepth - 1,
+            processedPaths
+          );
+        }
+
+        resolvedTrees.push(importTree);
+        processedPaths.add(resolvedPath);
       }
     } catch (error) {
       console.error(`Failed to resolve import: ${importInfo.source}`, error);
     }
   }
 
-  return resolvedImports;
+  return resolvedTrees;
 }

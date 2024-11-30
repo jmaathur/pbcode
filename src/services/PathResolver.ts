@@ -21,7 +21,7 @@ export default class PathResolver {
     const normalized: PathAliasMap = {};
     for (const [alias, targets] of Object.entries(map)) {
       const normalizedAlias = alias.replace(/\*+$/, "*");
-      normalized[normalizedAlias] = targets.map((target) =>
+      normalized[normalizedAlias] = targets.map(target =>
         target.replace(/\*+$/, "*").replace(/\/+/g, this.pathSeparator)
       );
     }
@@ -85,7 +85,7 @@ export default class PathResolver {
       if (matches) {
         result.matched = true;
         result.usedAlias = alias;
-        result.resolved = targets.map((target) =>
+        result.resolved = targets.map(target =>
           this.replaceAlias(normalizedPath, alias, target)
         );
         break;
@@ -103,7 +103,7 @@ export default class PathResolver {
   // Utility method to add new alias mappings
   addAlias(alias: string, targets: string[]): void {
     const normalizedAlias = alias.replace(/\*+$/, "*");
-    this.aliasMap[normalizedAlias] = targets.map((target) =>
+    this.aliasMap[normalizedAlias] = targets.map(target =>
       target.replace(/\*+$/, "*").replace(/\/+/g, this.pathSeparator)
     );
   }

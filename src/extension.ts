@@ -50,61 +50,34 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!selectedOption) return;
 
       try {
-        const mainFile = editor.document;
-        const imports = parseImports(mainFile.getText());
-        const resolvedImports = await resolveImportPaths(
-          imports,
-          mainFile.fileName
-        );
-
-        const mainFileDelimiter = `<file path="${mainFile.fileName}">\n`;
-        const mainFileEndDelimiter = `\n</file>\n`;
-        const mainFileContent =
-          mainFileDelimiter + mainFile.getText().trim() + mainFileEndDelimiter;
-
-        const processedFiles = new Set([mainFile.fileName]);
-        let extractedContent = "";
         switch (selectedOption.value) {
           case "current":
-            await vscode.env.clipboard.writeText(mainFile.getText().trim());
+            const mainContent = mainFile.getText().trim();
+            await vscode.env.clipboard.writeText(
+              addFileDelimiters(mainFile.fileName, mainContent)
+            );
             vscode.window.showInformationMessage(
               `Current file copied (${currentFileLines} lines)`
             );
             break;
 
           case "all":
-            await copyAllFiles(mainFile, resolvedImports, extractor);
+            await copyAllFiles(
+              mainFile,
+              resolvedImports,
+              extractor,
+              outputChannel
+            );
             break;
 
           case "selected":
-            await copySelectedFiles(mainFile, resolvedImports, extractor);
+            await copySelectedFiles(
+              mainFile,
+              resolvedImports,
+              extractor,
+              outputChannel
+            );
             break;
-
-            try {
-              const importedContent = await vscode.workspace.openTextDocument(
-                vscode.Uri.file(importInfo.resolvedPath)
-              );
-
-              const extractedEntities = await extractor.extractImportedEntities(
-                importedContent.getText(),
-                [importInfo]
-              );
-
-              if (extractedEntities.length > 0) {
-                // Add delimiter for each imported file
-                extractedContent += `<file path="${importInfo.resolvedPath}">\n`;
-                extractedEntities.forEach(entity => {
-                  extractedContent += entity.content;
-                });
-                extractedContent += `\n</file>\n`;
-              }
-
-              processedFiles.add(importInfo.resolvedPath);
-            } catch (error) {
-              outputChannel.appendLine(
-                `Error processing import ${importInfo.source}: ${error}`
-              );
-            }
         }
       } catch (error) {
         outputChannel.appendLine("Error: " + error);
@@ -117,14 +90,21 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(copyCurrentFileCommand);
 }
 
+function addFileDelimiters(filePath: string, content: string): string {
+  return `<file path="${filePath}">\n${content}\n</file>\n`;
+}
+
 async function copyAllFiles(
   mainFile: vscode.TextDocument,
   resolvedImports: any[],
-  extractor: CodeExtractor
+  extractor: CodeExtractor,
+  outputChannel: vscode.OutputChannel
 ) {
-  const mainFileContent = mainFile.getText().trim() + "\n\n";
   const processedFiles = new Set([mainFile.fileName]);
-  let extractedContent = "";
+  let finalContent = addFileDelimiters(
+    mainFile.fileName,
+    mainFile.getText().trim()
+  );
   let totalLines = mainFile.lineCount;
 
   for (const importInfo of resolvedImports) {
@@ -141,13 +121,18 @@ async function copyAllFiles(
         [importInfo]
       );
 
-      extractedEntities.forEach(entity => {
-        extractedContent += entity.content;
-      });
+      if (extractedEntities.length > 0) {
+        const content = extractedEntities
+          .map(entity => entity.content)
+          .join("\n");
+        finalContent += addFileDelimiters(importInfo.resolvedPath, content);
+      }
 
       processedFiles.add(importInfo.resolvedPath);
     } catch (error) {
-      console.error(`Error processing import ${importInfo.source}:`, error);
+      outputChannel.appendLine(
+        `Error processing import ${importInfo.source}: ${error}`
+      );
     }
   }
 
@@ -155,8 +140,7 @@ async function copyAllFiles(
     return;
   }
 
-  const finalContent = mainFileContent + extractedContent.trim();
-  await vscode.env.clipboard.writeText(finalContent);
+  await vscode.env.clipboard.writeText(finalContent.trim());
   vscode.window.showInformationMessage(
     `Code copied from ${processedFiles.size} files (${totalLines} lines)`
   );
@@ -165,7 +149,8 @@ async function copyAllFiles(
 async function copySelectedFiles(
   mainFile: vscode.TextDocument,
   resolvedImports: any[],
-  extractor: CodeExtractor
+  extractor: CodeExtractor,
+  outputChannel: vscode.OutputChannel
 ) {
   const selectedFiles = await QuickPickService.showFileSelector(
     mainFile,
@@ -181,7 +166,6 @@ async function copySelectedFiles(
     return;
   }
 
-  // Combine selected file contents
   let finalContent = "";
   const processedFiles = new Set<string>();
 
@@ -189,7 +173,7 @@ async function copySelectedFiles(
     if (processedFiles.has(file.path)) continue;
 
     if (file.path === mainFile.fileName) {
-      finalContent += file.content.trim() + "\n\n";
+      finalContent += addFileDelimiters(file.path, file.content.trim());
     } else {
       const importInfo = resolvedImports.find(
         imp => imp.resolvedPath === file.path
@@ -199,9 +183,12 @@ async function copySelectedFiles(
           file.content,
           [importInfo]
         );
-        extractedEntities.forEach(entity => {
-          finalContent += entity.content;
-        });
+        if (extractedEntities.length > 0) {
+          const content = extractedEntities
+            .map(entity => entity.content)
+            .join("\n");
+          finalContent += addFileDelimiters(file.path, content);
+        }
       }
     }
     processedFiles.add(file.path);

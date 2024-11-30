@@ -24,8 +24,11 @@ export async function activate(context: vscode.ExtensionContext) {
           mainFile.fileName
         );
 
-        // Start with the original file
-        const mainFileContent = mainFile.getText().trim() + "\n\n";
+        const mainFileDelimiter = `<file path="${mainFile.fileName}">\n`;
+        const mainFileEndDelimiter = `\n</file>\n`;
+        const mainFileContent =
+          mainFileDelimiter + mainFile.getText().trim() + mainFileEndDelimiter;
+
         const processedFiles = new Set([mainFile.fileName]);
         let extractedContent = "";
 
@@ -43,9 +46,14 @@ export async function activate(context: vscode.ExtensionContext) {
               [importInfo]
             );
 
-            extractedEntities.forEach((entity) => {
-              extractedContent += entity.content;
-            });
+            if (extractedEntities.length > 0) {
+              // Add delimiter for each imported file
+              extractedContent += `<file path="${importInfo.resolvedPath}">\n`;
+              extractedEntities.forEach(entity => {
+                extractedContent += entity.content;
+              });
+              extractedContent += `\n</file>\n`;
+            }
 
             processedFiles.add(importInfo.resolvedPath);
           } catch (error) {

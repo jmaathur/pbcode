@@ -83,22 +83,21 @@ export async function resolveImportPaths(
 
   for (const importInfo of imports) {
     console.log("\nProcessing import:", importInfo.source);
-
     try {
       let resolvedPath: string | null = null;
 
-      if (importInfo.source.startsWith("@")) {
-        resolvedPath = await resolveAliasPath(
-          importInfo.source,
-          workspaceRoot,
-          tsconfig
-        );
-      } else if (importInfo.source.startsWith(".")) {
+      if (importInfo.source.startsWith(".")) {
         const absolutePath = path.resolve(
           path.dirname(currentFilePath),
           importInfo.source
         );
         resolvedPath = await tryExtensions(absolutePath);
+      } else {
+        resolvedPath = await resolveAliasPath(
+          importInfo.source,
+          workspaceRoot,
+          tsconfig
+        );
       }
 
       if (resolvedPath) {

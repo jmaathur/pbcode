@@ -2,16 +2,23 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs/promises";
 import { TSConfig, ImportInfo } from "../types";
+import PathResolver from "../services/PathResolver";
+import JSON5 from "json5";
 
 async function loadTSConfig(workspaceRoot: string): Promise<TSConfig> {
   try {
     const tsconfigPath = path.join(workspaceRoot, "tsconfig.json");
     const tsconfigContent = await fs.readFile(tsconfigPath, "utf-8");
-    return JSON.parse(tsconfigContent);
+    return JSON5.parse(tsconfigContent);
   } catch (error) {
     console.error("Failed to load tsconfig.json:", error);
     return {};
   }
+}
+
+function matchesAtStart(input: string, pattern: string): boolean {
+  const regex = new RegExp("^" + pattern);
+  return regex.test(input);
 }
 
 async function resolveAliasPath(
@@ -19,40 +26,24 @@ async function resolveAliasPath(
   workspaceRoot: string,
   tsconfig: TSConfig
 ): Promise<string | null> {
-  console.log("\nResolving alias path:", {
-    importPath,
-    workspaceRoot,
-  });
-
   const paths = tsconfig.compilerOptions?.paths || {};
-  console.log("TSConfig paths:", paths);
+
+  const resolver = new PathResolver(paths);
 
   const possibleBaseDirs = ["", "src", "app"];
 
   for (const baseDir of possibleBaseDirs) {
-    if (importPath.startsWith("@/")) {
-      const relativePath = importPath.slice(2);
-      const possiblePaths = [
-        path.join(workspaceRoot, baseDir, relativePath),
-        path.join(workspaceRoot, baseDir, relativePath, "index"),
-        path.join(workspaceRoot, baseDir, relativePath, "page"),
-      ];
+    const { resolved } = resolver.resolvePath(importPath);
+    const possiblePaths = [
+      path.join(workspaceRoot, baseDir, resolved[0]),
+      path.join(workspaceRoot, baseDir, resolved[0], "page"),
+      path.join(workspaceRoot, baseDir, resolved[0], "index"),
+    ];
 
-      for (const basePath of possiblePaths) {
-        const resolved = await tryExtensions(basePath);
-        if (resolved) return resolved;
-      }
-    } else if (importPath.startsWith("@lib/")) {
-      const relativePath = importPath.slice(5);
-      const possiblePaths = [
-        path.join(workspaceRoot, baseDir, "lib", relativePath),
-        path.join(workspaceRoot, "lib", relativePath),
-        path.join(workspaceRoot, baseDir, "lib", relativePath, "index"),
-      ];
-
-      for (const basePath of possiblePaths) {
-        const resolved = await tryExtensions(basePath);
-        if (resolved) return resolved;
+    for (const basePath of possiblePaths) {
+      const tryExtensionResult = await tryExtensions(basePath);
+      if (tryExtensionResult) {
+        return tryExtensionResult;
       }
     }
   }
@@ -87,6 +78,7 @@ export async function resolveImportPaths(
   }
 
   const tsconfig = await loadTSConfig(workspaceRoot);
+
   const resolvedImports: ImportInfo[] = [];
 
   for (const importInfo of imports) {

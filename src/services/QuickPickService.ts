@@ -110,20 +110,6 @@ export class QuickPickService {
     return result;
   }
 
-  static async confirmLargeFileOperation(totalLines: number): Promise<boolean> {
-    if (totalLines <= SIZE_LIMITS.WARNING) {
-      return true;
-    }
-
-    const proceed = await vscode.window.showWarningMessage(
-      `The combined code is ${totalLines} lines. This might be too large for optimal AI assistance.`,
-      "Copy Anyway",
-      "Cancel"
-    );
-
-    return proceed === "Copy Anyway";
-  }
-
   private static calculateTotalLines(files: FileItem[]): number {
     return files.reduce((total, file) => total + file.lineCount, 0);
   }

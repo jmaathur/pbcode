@@ -20,7 +20,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
       // Calculate total lines for all related files
       const mainFile = editor.document;
-      const currentFileLines = mainFile.getText().split("\n").length;
+      const currentFileLines = mainFile.lineCount;
       const imports = parseImports(mainFile.getText());
       const resolvedImports = await resolveImportPaths(
         imports,
@@ -33,7 +33,7 @@ export async function activate(context: vscode.ExtensionContext) {
           const doc = await vscode.workspace.openTextDocument(
             vscode.Uri.file(importInfo.resolvedPath)
           );
-          totalRelatedLines += doc.getText().split("\n").length;
+          totalRelatedLines += doc.lineCount;
         } catch (error) {
           console.error(
             `Error loading file ${importInfo.resolvedPath}:`,
@@ -94,6 +94,7 @@ export async function activate(context: vscode.ExtensionContext) {
 function addFileDelimiters(filePath: string, content: string): string {
   return `<file path="${filePath}">\n${content}\n</file>\n`;
 }
+
 async function copyAllFiles(
   mainFile: vscode.TextDocument,
   resolvedImports: ImportInfo[],
@@ -106,8 +107,6 @@ async function copyAllFiles(
     mainFile.fileName,
     mainFile.getText().trim()
   );
-  // Initialize total lines counting the main file's content + delimiters
-  let totalLines = finalContent.split("\n").length;
 
   for (const importInfo of resolvedImports) {
     try {
@@ -137,8 +136,6 @@ async function copyAllFiles(
             newContent.trim()
           );
           finalContent += formattedContent;
-          // Add the actual number of lines in the formatted content
-          totalLines += formattedContent.split("\n").length;
         }
       }
     } catch (error) {
@@ -146,10 +143,6 @@ async function copyAllFiles(
         `Error processing import ${importInfo.source}: ${error}`
       );
     }
-  }
-
-  if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
-    return;
   }
 
   const finalTrimmedContent = finalContent.trim();
@@ -213,10 +206,6 @@ async function copySelectedFiles(
 
   const finalTrimmedContent = finalContent.trim();
   const totalLines = finalTrimmedContent.split("\n").length;
-
-  if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
-    return;
-  }
 
   await vscode.env.clipboard.writeText(finalTrimmedContent);
   vscode.window.showInformationMessage(

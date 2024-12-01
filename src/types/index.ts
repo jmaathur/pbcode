@@ -19,6 +19,7 @@ export interface ImportInfo {
 }
 
 export interface ExtractedContent {
+  name: string;
   content: string;
   location: {
     start: number;

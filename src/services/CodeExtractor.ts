@@ -5,12 +5,11 @@ export class CodeExtractor {
 
   async extractImportedEntities(
     sourceCode: string,
-    imports: ImportInfo[]
+    importInfo: ImportInfo
   ): Promise<ExtractedContent[]> {
     this.seenDeclarations.clear();
-
     try {
-      return this.findDeclarations(sourceCode, imports);
+      return this.findDeclarations(sourceCode, importInfo);
     } catch (error) {
       console.error("Failed to extract entities:", error);
       return [];
@@ -19,7 +18,7 @@ export class CodeExtractor {
 
   private findDeclarations(
     sourceCode: string,
-    imports: ImportInfo[]
+    importInfo: ImportInfo
   ): ExtractedContent[] {
     const extracted: ExtractedContent[] = [];
     const lines = sourceCode.split("\n");
@@ -28,17 +27,22 @@ export class CodeExtractor {
     let isCollecting = false;
     let bracketCount = 0;
     let currentName: string | null = null;
+    let startLine: number = 0;
 
-    const storeCurrentDeclaration = () => {
+    const storeCurrentDeclaration = (endLine: number) => {
       if (
         currentName &&
         !this.seenDeclarations.has(currentName) &&
-        this.isImportedInAny(currentName, imports)
+        this.isImportedInAny(currentName, importInfo)
       ) {
         this.seenDeclarations.add(currentName);
         extracted.push({
           content: this.formatDeclaration(currentDeclaration.join("\n")),
-          location: { start: 0, end: 0 },
+          name: currentName,
+          location: {
+            start: startLine,
+            end: endLine,
+          },
         });
       }
       isCollecting = false;
@@ -58,6 +62,7 @@ export class CodeExtractor {
         if (declarationMatch) {
           currentName = declarationMatch[1];
           isCollecting = true;
+          startLine = i;
           currentDeclaration = [lines[i]];
           bracketCount =
             (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
@@ -71,13 +76,17 @@ export class CodeExtractor {
         bracketCount -= (line.match(/}/g) || []).length;
 
         if (bracketCount === 0 && line.match(/[};]/)) {
-          storeCurrentDeclaration();
+          storeCurrentDeclaration(i);
         }
       }
     }
 
     if (isCollecting) {
-      storeCurrentDeclaration();
+      console.error(
+        "Invalid typescript? Still collecting at end of file",
+        importInfo.resolvedPath
+      );
+      storeCurrentDeclaration(lines.length - 1);
     }
 
     return extracted;
@@ -90,14 +99,13 @@ export class CodeExtractor {
     return content;
   }
 
-  private isImportedInAny(name: string, imports: ImportInfo[]): boolean {
-    return imports.some((importInfo) =>
-      importInfo.imports.some(
-        (imp) =>
-          imp.name === name ||
-          imp.alias === name ||
-          (imp.isDefault && name === "default")
-      )
+  private isImportedInAny(name: string, importInfo: ImportInfo): boolean {
+    return importInfo.imports.some(
+      (i) =>
+        i.name === name ||
+        i.alias === name ||
+        (i.isDefault && name === "default") ||
+        i.isNamespace
     );
   }
 }

@@ -3,6 +3,7 @@ import { CodeExtractor } from "./services/CodeExtractor";
 import { parseImports } from "./utils/importParser";
 import { resolveImportPaths } from "./utils/pathResolution";
 import { QuickPickService } from "./services/QuickPickService";
+import { ImportInfo } from "./types";
 
 export async function activate(context: vscode.ExtensionContext) {
   const extractor = new CodeExtractor();
@@ -96,11 +97,13 @@ function addFileDelimiters(filePath: string, content: string): string {
 
 async function copyAllFiles(
   mainFile: vscode.TextDocument,
-  resolvedImports: any[],
+  resolvedImports: ImportInfo[],
   extractor: CodeExtractor,
   outputChannel: vscode.OutputChannel
 ) {
-  const processedFiles = new Set([mainFile.fileName]);
+  // Map to track processed entities using fileName:entityName as key
+  const processedEntities = new Map<string, string>();
+
   let finalContent = addFileDelimiters(
     mainFile.fileName,
     mainFile.getText().trim()
@@ -108,8 +111,6 @@ async function copyAllFiles(
   let totalLines = mainFile.lineCount;
 
   for (const importInfo of resolvedImports) {
-    if (processedFiles.has(importInfo.resolvedPath)) continue;
-
     try {
       const importedContent = await vscode.workspace.openTextDocument(
         vscode.Uri.file(importInfo.resolvedPath)
@@ -118,17 +119,29 @@ async function copyAllFiles(
 
       const extractedEntities = await extractor.extractImportedEntities(
         importedContent.getText(),
-        [importInfo]
+        importInfo
       );
 
       if (extractedEntities.length > 0) {
-        const content = extractedEntities
-          .map(entity => entity.content)
-          .join("\n");
-        finalContent += addFileDelimiters(importInfo.resolvedPath, content);
-      }
+        let newContent = "";
+        for (const entity of extractedEntities) {
+          // Create a unique key for each entity
+          const entityKey = `${importInfo.resolvedPath}:${entity.name}`;
 
-      processedFiles.add(importInfo.resolvedPath);
+          // Only add the entity if we haven't processed it yet
+          if (!processedEntities.has(entityKey)) {
+            newContent += entity.content + "\n";
+            processedEntities.set(entityKey, entity.content);
+          }
+        }
+
+        if (newContent.trim()) {
+          finalContent += addFileDelimiters(
+            importInfo.resolvedPath,
+            newContent.trim()
+          );
+        }
+      }
     } catch (error) {
       outputChannel.appendLine(
         `Error processing import ${importInfo.source}: ${error}`
@@ -142,7 +155,11 @@ async function copyAllFiles(
 
   await vscode.env.clipboard.writeText(finalContent.trim());
   vscode.window.showInformationMessage(
-    `Code copied from ${processedFiles.size} files (${totalLines} lines)`
+    `Code copied with ${processedEntities.size} entities from ${
+      new Set(
+        Array.from(processedEntities.keys()).map((key) => key.split(":")[0])
+      ).size
+    } files (${totalLines} lines)`
   );
 }
 
@@ -167,36 +184,45 @@ async function copySelectedFiles(
   }
 
   let finalContent = "";
-  const processedFiles = new Set<string>();
+  const processedEntities = new Map<string, string>();
 
   for (const file of selectedFiles) {
-    if (processedFiles.has(file.path)) continue;
-
     if (file.path === mainFile.fileName) {
       finalContent += addFileDelimiters(file.path, file.content.trim());
     } else {
       const importInfo = resolvedImports.find(
-        imp => imp.resolvedPath === file.path
+        (imp) => imp.resolvedPath === file.path
       );
       if (importInfo) {
         const extractedEntities = await extractor.extractImportedEntities(
           file.content,
-          [importInfo]
+          importInfo
         );
         if (extractedEntities.length > 0) {
-          const content = extractedEntities
-            .map(entity => entity.content)
-            .join("\n");
-          finalContent += addFileDelimiters(file.path, content);
+          let newContent = "";
+          for (const entity of extractedEntities) {
+            const entityKey = `${file.path}:${entity.name}`;
+            if (!processedEntities.has(entityKey)) {
+              newContent += entity.content + "\n";
+              processedEntities.set(entityKey, entity.content);
+            }
+          }
+
+          if (newContent.trim()) {
+            finalContent += addFileDelimiters(file.path, newContent.trim());
+          }
         }
       }
     }
-    processedFiles.add(file.path);
   }
 
   await vscode.env.clipboard.writeText(finalContent.trim());
   vscode.window.showInformationMessage(
-    `Code copied from ${processedFiles.size} selected files (${totalLines} lines)`
+    `Code copied with ${processedEntities.size} entities from ${
+      new Set(
+        Array.from(processedEntities.keys()).map((key) => key.split(":")[0])
+      ).size
+    } selected files (${totalLines} lines)`
   );
 }
 

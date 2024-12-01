@@ -91,14 +91,14 @@ export class QuickPickService {
 
     let selectedFiles: FileItem[] = [];
 
-    quickPick.onDidChangeSelection(items => {
+    quickPick.onDidChangeSelection((items) => {
       selectedFiles = items as FileItem[];
       const totalLines = this.calculateTotalLines(selectedFiles);
       const indicator = getSizeIndicator(totalLines);
       quickPick.title = `Total: ${totalLines} lines - ${indicator.message}`;
     });
 
-    const result = await new Promise<FileItem[] | undefined>(resolve => {
+    const result = await new Promise<FileItem[] | undefined>((resolve) => {
       quickPick.onDidAccept(() => {
         resolve(selectedFiles);
         quickPick.hide();
@@ -110,20 +110,6 @@ export class QuickPickService {
     return result;
   }
 
-  static async confirmLargeFileOperation(totalLines: number): Promise<boolean> {
-    if (totalLines <= SIZE_LIMITS.WARNING) {
-      return true;
-    }
-
-    const proceed = await vscode.window.showWarningMessage(
-      `The combined code is ${totalLines} lines. This might be too large for optimal AI assistance.`,
-      "Copy Anyway",
-      "Cancel"
-    );
-
-    return proceed === "Copy Anyway";
-  }
-
   private static calculateTotalLines(files: FileItem[]): number {
     return files.reduce((total, file) => total + file.lineCount, 0);
   }
@@ -132,6 +118,7 @@ export class QuickPickService {
     mainFile: vscode.TextDocument,
     resolvedImports: any[]
   ): Promise<FileItem[]> {
+    let totalLines = mainFile.getText().split("\n").length;
     const fileItems: FileItem[] = [
       {
         label: "$(file) " + vscode.workspace.asRelativePath(mainFile.fileName),
@@ -152,17 +139,27 @@ export class QuickPickService {
         const doc = await vscode.workspace.openTextDocument(
           vscode.Uri.file(importInfo.resolvedPath)
         );
+        const docLineCount = doc.getText().split("\n").length;
+        totalLines += docLineCount;
         fileItems.push({
           label: "$(file) " + relativePath,
-          description: `${doc.lineCount} lines`,
-          //   detail: getSizeIndicator(doc.lineCount).message,
+          description: `${docLineCount} lines`,
+          detail: getSizeIndicator(docLineCount).message,
           path: importInfo.resolvedPath,
           content: doc.getText(),
-          lineCount: doc.lineCount,
+          lineCount: docLineCount,
         });
       } catch (error) {
         console.error(`Error loading file ${relativePath}:`, error);
       }
+    }
+
+    // Update the total line count for all files
+    const firstItem = fileItems[0];
+    if (firstItem) {
+      firstItem.detail = `Total: ${totalLines} lines - ${
+        getSizeIndicator(totalLines).message
+      }`;
     }
 
     return fileItems;

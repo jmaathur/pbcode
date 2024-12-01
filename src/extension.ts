@@ -20,7 +20,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
       // Calculate total lines for all related files
       const mainFile = editor.document;
-      const currentFileLines = mainFile.lineCount;
+      const currentFileLines = mainFile.getText().split("\n").length;
       const imports = parseImports(mainFile.getText());
       const resolvedImports = await resolveImportPaths(
         imports,
@@ -33,7 +33,7 @@ export async function activate(context: vscode.ExtensionContext) {
           const doc = await vscode.workspace.openTextDocument(
             vscode.Uri.file(importInfo.resolvedPath)
           );
-          totalRelatedLines += doc.lineCount;
+          totalRelatedLines += doc.getText().split("\n").length;
         } catch (error) {
           console.error(
             `Error loading file ${importInfo.resolvedPath}:`,
@@ -94,28 +94,26 @@ export async function activate(context: vscode.ExtensionContext) {
 function addFileDelimiters(filePath: string, content: string): string {
   return `<file path="${filePath}">\n${content}\n</file>\n`;
 }
-
 async function copyAllFiles(
   mainFile: vscode.TextDocument,
   resolvedImports: ImportInfo[],
   extractor: CodeExtractor,
   outputChannel: vscode.OutputChannel
 ) {
-  // Map to track processed entities using fileName:entityName as key
   const processedEntities = new Map<string, string>();
 
   let finalContent = addFileDelimiters(
     mainFile.fileName,
     mainFile.getText().trim()
   );
-  let totalLines = mainFile.lineCount;
+  // Initialize total lines counting the main file's content + delimiters
+  let totalLines = finalContent.split("\n").length;
 
   for (const importInfo of resolvedImports) {
     try {
       const importedContent = await vscode.workspace.openTextDocument(
         vscode.Uri.file(importInfo.resolvedPath)
       );
-      totalLines += importedContent.lineCount;
 
       const extractedEntities = await extractor.extractImportedEntities(
         importedContent.getText(),
@@ -125,10 +123,8 @@ async function copyAllFiles(
       if (extractedEntities.length > 0) {
         let newContent = "";
         for (const entity of extractedEntities) {
-          // Create a unique key for each entity
           const entityKey = `${importInfo.resolvedPath}:${entity.name}`;
 
-          // Only add the entity if we haven't processed it yet
           if (!processedEntities.has(entityKey)) {
             newContent += entity.content + "\n";
             processedEntities.set(entityKey, entity.content);
@@ -136,10 +132,13 @@ async function copyAllFiles(
         }
 
         if (newContent.trim()) {
-          finalContent += addFileDelimiters(
+          const formattedContent = addFileDelimiters(
             importInfo.resolvedPath,
             newContent.trim()
           );
+          finalContent += formattedContent;
+          // Add the actual number of lines in the formatted content
+          totalLines += formattedContent.split("\n").length;
         }
       }
     } catch (error) {
@@ -153,13 +152,17 @@ async function copyAllFiles(
     return;
   }
 
-  await vscode.env.clipboard.writeText(finalContent.trim());
+  const finalTrimmedContent = finalContent.trim();
+  // Get the exact final line count
+  const finalLineCount = finalTrimmedContent.split("\n").length;
+
+  await vscode.env.clipboard.writeText(finalTrimmedContent);
   vscode.window.showInformationMessage(
     `Code copied with ${processedEntities.size} entities from ${
       new Set(
         Array.from(processedEntities.keys()).map((key) => key.split(":")[0])
       ).size
-    } files (${totalLines} lines)`
+    } files (${finalLineCount} lines)`
   );
 }
 
@@ -174,14 +177,6 @@ async function copySelectedFiles(
     resolvedImports
   );
   if (!selectedFiles || selectedFiles.length === 0) return;
-
-  const totalLines = selectedFiles.reduce(
-    (total, file) => total + file.lineCount,
-    0
-  );
-  if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
-    return;
-  }
 
   let finalContent = "";
   const processedEntities = new Map<string, string>();
@@ -216,7 +211,14 @@ async function copySelectedFiles(
     }
   }
 
-  await vscode.env.clipboard.writeText(finalContent.trim());
+  const finalTrimmedContent = finalContent.trim();
+  const totalLines = finalTrimmedContent.split("\n").length;
+
+  if (!(await QuickPickService.confirmLargeFileOperation(totalLines))) {
+    return;
+  }
+
+  await vscode.env.clipboard.writeText(finalTrimmedContent);
   vscode.window.showInformationMessage(
     `Code copied with ${processedEntities.size} entities from ${
       new Set(
